@@ -17,6 +17,15 @@ cfg_if! {
     }
 }
 
+extern crate web_sys;
+
+// // A macro to provide `println!(..)`-style syntax for `console.log` logging.
+// macro_rules! log {
+//     ( $( $t:tt )* ) => {
+//         web_sys::console::log_1(&format!( $( $t )* ).into());
+//     }
+// }
+
 #[wasm_bindgen]
 extern "C" {
     fn alert(s: &str);
@@ -30,6 +39,15 @@ pub enum Cell {
     Alive = 1,
 }
 
+impl Cell {
+    fn toggle(&mut self) {
+        *self = match *self {
+            Cell::Dead => Cell::Alive,
+            Cell::Alive => Cell::Dead,
+        };
+    }
+}
+
 #[wasm_bindgen]
 pub struct Universe {
     width: u32,
@@ -40,35 +58,44 @@ pub struct Universe {
 #[wasm_bindgen]
 impl Universe {
     pub fn tick(&mut self) {
-        let mut next = self.cells.clone();
+        let _timer = Timer::new("Universe::tick");
 
-        for row in 0..self.height {
-            for col in 0..self.width {
-                let idx = self.get_index(row, col);
-                let cell = self.cells[idx];
-                let live_neighbors = self.live_neighbor_count(row, col);
+        let mut next = {
+            let _timer = Timer::new("allocate next cells");
+            self.cells.clone()
+        };
 
-                let next_cell = match (cell, live_neighbors) {
-                    // Rule 1: Any live cell with fewer than two live neighbours
-                    // dies, as if caused by underpopulation.
-                    (Cell::Alive, x) if x < 2 => Cell::Dead,
-                    // Rule 2: Any live cell with two or three live neighbours
-                    // lives on to the next generation.
-                    (Cell::Alive, 2) | (Cell::Alive, 3) => Cell::Alive,
-                    // Rule 3: Any live cell with more than three live
-                    // neighbours dies, as if by overpopulation.
-                    (Cell::Alive, x) if x > 3 => Cell::Dead,
-                    // Rule 4: Any dead cell with exactly three live neighbours
-                    // becomes a live cell, as if by reproduction.
-                    (Cell::Dead, 3) => Cell::Alive,
-                    // All other cells remain in the same state.
-                    (otherwise, _) => otherwise,
-                };
+        {
+            let _timer = Timer::new("new generation");
+            for row in 0..self.height {
+                for col in 0..self.width {
+                    let idx = self.get_index(row, col);
+                    let cell = self.cells[idx];
+                    let live_neighbors = self.live_neighbor_count(row, col);
 
-                next[idx] = next_cell;
+                    let next_cell = match (cell, live_neighbors) {
+                        // Rule 1: Any live cell with fewer than two live neighbours
+                        // dies, as if caused by underpopulation.
+                        (Cell::Alive, x) if x < 2 => Cell::Dead,
+                        // Rule 2: Any live cell with two or three live neighbours
+                        // lives on to the next generation.
+                        (Cell::Alive, 2) | (Cell::Alive, 3) => Cell::Alive,
+                        // Rule 3: Any live cell with more than three live
+                        // neighbours dies, as if by overpopulation.
+                        (Cell::Alive, x) if x > 3 => Cell::Dead,
+                        // Rule 4: Any dead cell with exactly three live neighbours
+                        // becomes a live cell, as if by reproduction.
+                        (Cell::Dead, 3) => Cell::Alive,
+                        // All other cells remain in the same state.
+                        (otherwise, _) => otherwise,
+                    };
+
+                    next[idx] = next_cell;
+                }
             }
         }
 
+        let _timer = Timer::new("free old cells");
         self.cells = next;
     }
 
@@ -78,27 +105,57 @@ impl Universe {
 
     fn live_neighbor_count(&self, row: u32, column: u32) -> u8 {
         let mut count = 0;
-        for delta_row in [self.height - 1, 0, 1].iter().cloned() {
-            for delta_col in [self.width - 1, 0, 1].iter().cloned() {
-                if delta_row == 0 && delta_col == 0 {
-                    continue;
-                }
 
-                let neighbor_row = (row + delta_row) % self.height;
-                let neighbor_col = (column + delta_col) % self.width;
-                let idx = self.get_index(neighbor_row, neighbor_col);
-                count += self.cells[idx] as u8;
-            }
-        }
+        let north = if row == 0 { self.height - 1 } else { row - 1 };
+
+        let south = if row == self.height - 1 { 0 } else { row + 1 };
+
+        let west = if column == 0 {
+            self.width - 1
+        } else {
+            column - 1
+        };
+
+        let east = if column == self.width - 1 {
+            0
+        } else {
+            column + 1
+        };
+
+        let nw = self.get_index(north, west);
+        count += self.cells[nw] as u8;
+
+        let n = self.get_index(north, column);
+        count += self.cells[n] as u8;
+
+        let ne = self.get_index(north, east);
+        count += self.cells[ne] as u8;
+
+        let w = self.get_index(row, west);
+        count += self.cells[w] as u8;
+
+        let e = self.get_index(row, east);
+        count += self.cells[e] as u8;
+
+        let sw = self.get_index(south, west);
+        count += self.cells[sw] as u8;
+
+        let s = self.get_index(south, column);
+        count += self.cells[s] as u8;
+
+        let se = self.get_index(south, east);
+        count += self.cells[se] as u8;
+
         count
     }
 
     pub fn new() -> Universe {
-        let width = 64;
-        let height = 64;
+        // utils::set_panic_hook();
+        let width = 128;
+        let height = 128;
 
         let cells = (0..width * height)
-            .map(|i| {
+            .map(|_i| {
                 if js_sys::Math::random() < 0.5 {
                     Cell::Alive
                 } else {
@@ -129,6 +186,43 @@ impl Universe {
     pub fn cells(&self) -> *const Cell {
         self.cells.as_ptr()
     }
+
+    /// Set the width of the universe.
+    ///
+    /// Resets all cells to the dead state.
+    pub fn set_width(&mut self, width: u32) {
+        self.width = width;
+        self.cells = (0..width * self.height).map(|_i| Cell::Dead).collect();
+    }
+
+    /// Set the height of the universe.
+    ///
+    /// Resets all cells to the dead state.
+    pub fn set_height(&mut self, height: u32) {
+        self.height = height;
+        self.cells = (0..self.width * height).map(|_i| Cell::Dead).collect();
+    }
+
+    pub fn toggle_cell(&mut self, row: u32, column: u32) {
+        let idx = self.get_index(row, column);
+        self.cells[idx].toggle();
+    }
+}
+
+impl Universe {
+    /// Get the dead and alive values of the entire universe.
+    pub fn get_cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// Set cells to be alive in a universe by passing the row and column
+    /// of each cell as an array.
+    pub fn set_cells(&mut self, cells: &[(u32, u32)]) {
+        for (row, col) in cells.iter().cloned() {
+            let idx = self.get_index(row, col);
+            self.cells[idx] = Cell::Alive;
+        }
+    }
 }
 
 use std::fmt;
@@ -144,5 +238,24 @@ impl fmt::Display for Universe {
         }
 
         Ok(())
+    }
+}
+
+use web_sys::console;
+
+pub struct Timer<'a> {
+    name: &'a str,
+}
+
+impl<'a> Timer<'a> {
+    pub fn new(name: &'a str) -> Timer<'a> {
+        console::time_with_label(name);
+        Timer { name }
+    }
+}
+
+impl<'a> Drop for Timer<'a> {
+    fn drop(&mut self) {
+        console::time_end_with_label(self.name);
     }
 }
